@@ -1,0 +1,20 @@
+name: 24/7 Absorb Scanner Cron
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Every 5 minutes
+  workflow_dispatch:
+
+jobs:
+  scan-and-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Radar API
+        run: |
+          # Trigger background scan on Vercel
+          if [ -n "${{ secrets.VERCEL_APP_URL }}" ]; then
+            curl -s "${{ secrets.VERCEL_APP_URL }}/api/signals" > /dev/null
+            echo "Successfully refreshed Vercel radar state."
+          else
+            echo "VERCEL_APP_URL secret not set. Skipping ping."
+          fi

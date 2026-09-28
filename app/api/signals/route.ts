@@ -1,0 +1,65 @@
+import { NextResponse } from 'next/server';
+import { fetchTopAltcoins } from '@/lib/binance';
+import { processSymbol } from '@/lib/detector';
+import { CoinSignal, ScanResult } from '@/lib/types';
+
+// In-memory cache for fast serverless responses
+let cachedSignals: ScanResult = {
+  lastUpdated: 0,
+  totalScanned: 0,
+  signals: [],
+};
+
+const CACHE_TTL_MS = 15000; // 15 seconds cache
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 30; // 30s timeout for Vercel
+
+export async function GET() {
+  const now = Date.now();
+
+  // Return cached result if still fresh
+  if (cachedSignals.signals.length > 0 && now - cachedSignals.lastUpdated < CACHE_TTL_MS) {
+    return NextResponse.json(cachedSignals);
+  }
+
+  try {
+    const topTickers = await fetchTopAltcoins(50);
+    if (!topTickers || topTickers.length === 0) {
+      return NextResponse.json(cachedSignals);
+    }
+
+    // Process in batches of 10 to avoid rate limit spikes
+    const batchSize = 10;
+    const allSignals: CoinSignal[] = [];
+
+    for (let i = 0; i < topTickers.length; i += batchSize) {
+      const batch = topTickers.slice(i, i + batchSize);
+      const results = await Promise.all(batch.map((ticker) => processSymbol(ticker)));
+      for (const res of results) {
+        if (res) allSignals.push(res);
+      }
+    }
+
+    // Sort by confluence score descending, then by volume
+    allSignals.sort((a, b) => {
+      if (b.confluenceScore !== a.confluenceScore) {
+        return b.confluenceScore - a.confluenceScore;
+      }
+      return b.volume24hUsd - a.volume24hUsd;
+    });
+
+    cachedSignals = {
+      lastUpdated: now,
+      totalScanned: allSignals.length,
+      signals: allSignals,
+    };
+
+    return NextResponse.json(cachedSignals);
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: 'Failed to scan signals', details: error?.message },
+      { status: 500 }
+    );
+  }
+}
