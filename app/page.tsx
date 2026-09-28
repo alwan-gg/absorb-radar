@@ -10,29 +10,32 @@ import {
   VolumeX, 
   ExternalLink, 
   Search, 
-  ShieldAlert,
-  Zap,
-  TrendingUp,
-  BarChart2,
-  CheckCircle2
+  ShieldAlert, 
+  Zap, 
+  TrendingUp, 
+  BarChart2, 
+  CheckCircle2, 
+  Clock 
 } from 'lucide-react';
 import { CoinSignal, Timeframe } from '@/lib/types';
 
 export default function Dashboard() {
   const [signalsMap, setSignalsMap] = useState<Record<string, CoinSignal>>({});
   const [loading, setLoading] = useState<boolean>(true);
-  const [scanningProgress, setScanningProgress] = useState<{ loaded: number; total: number }>({ loaded: 0, total: 720 });
+  const [scanningProgress, setScanningProgress] = useState<{ loaded: number; total: number }>({ loaded: 0, total: 730 });
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [search, setSearch] = useState<string>('');
   const [filterType, setFilterType] = useState<'ALL' | 'BULLISH' | 'BEARISH' | 'CONFLUENCE'>('ALL');
   const [selectedTf, setSelectedTf] = useState<Timeframe | 'ALL'>('ALL');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
+  const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState<number>(5);
+  const [secondsUntilNext, setSecondsUntilNext] = useState<number>(300);
   const isFetchingRef = useRef<boolean>(false);
 
   // Fetch a single chunk
-  const fetchChunk = async (offset: number, limit: number = 150) => {
+  const fetchChunk = async (offset: number, limit: number = 150, fresh: boolean = false) => {
     try {
-      const res = await fetch(`/api/signals?offset=${offset}&limit=${limit}`);
+      const res = await fetch(`/api/signals?offset=${offset}&limit=${limit}${fresh ? '&fresh=1' : ''}`);
       if (!res.ok) return null;
       return await res.json();
     } catch {
@@ -41,18 +44,18 @@ export default function Dashboard() {
   };
 
   // Continuous Full-Market Scanner
-  const loadAllAltcoins = async () => {
+  const loadAllAltcoins = async (forceFresh: boolean = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     setLoading(true);
 
     try {
       // 1. First chunk (Instant priority: Top 150 volume coins)
-      const firstData = await fetchChunk(0, 150);
-      let totalAvailable = 720;
+      const firstData = await fetchChunk(0, 150, forceFresh);
+      let totalAvailable = 730;
 
       if (firstData && firstData.signals) {
-        totalAvailable = firstData.totalAvailable || 720;
+        totalAvailable = firstData.totalAvailable || 730;
         setSignalsMap((prev) => {
           const next = { ...prev };
           firstData.signals.forEach((s: CoinSignal) => {
@@ -64,14 +67,13 @@ export default function Dashboard() {
         setLastRefreshed(new Date());
       }
 
-      // 2. Fetch remaining chunks in background pipeline (offsets 150, 300, 450, 600...)
+      // 2. Fetch remaining chunks (offsets 150, 300, 450, 600...)
       const offsets: number[] = [];
       for (let off = 150; off < totalAvailable; off += 150) {
         offsets.push(off);
       }
 
-      // Parallel chunk requests
-      const chunkResults = await Promise.all(offsets.map((off) => fetchChunk(off, 150)));
+      const chunkResults = await Promise.all(offsets.map((off) => fetchChunk(off, 150, forceFresh)));
 
       setSignalsMap((prev) => {
         const next = { ...prev };
@@ -89,6 +91,7 @@ export default function Dashboard() {
       });
 
       setLastRefreshed(new Date());
+      setSecondsUntilNext(refreshIntervalMinutes * 60);
     } catch (err) {
       console.error('Scan error:', err);
     } finally {
@@ -98,10 +101,24 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    loadAllAltcoins();
-    const interval = setInterval(loadAllAltcoins, 30000); // Auto-refresh every 30s
-    return () => clearInterval(interval);
+    loadAllAltcoins(false);
   }, []);
+
+  // Interval & Countdown Timer
+  useEffect(() => {
+    setSecondsUntilNext(refreshIntervalMinutes * 60);
+    const timer = setInterval(() => {
+      setSecondsUntilNext((prev) => {
+        if (prev <= 1) {
+          loadAllAltcoins(false);
+          return refreshIntervalMinutes * 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [refreshIntervalMinutes]);
 
   // Convert map to sorted array
   const allSignalsList = useMemo(() => {
@@ -164,6 +181,12 @@ export default function Dashboard() {
     return `$${num.toFixed(2)}`;
   };
 
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
   const renderTfBadge = (tf: Timeframe, span: any) => {
     if (!span) return null;
     const isBull = span.status === 'BULLISH_ABSORB';
@@ -210,25 +233,43 @@ export default function Dashboard() {
               <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                 ABSORB & FLOW RADAR
                 <span className="text-xs font-mono bg-cyan-950 text-cyan-400 border border-cyan-800 px-2.5 py-0.5 rounded-full font-normal flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3 text-cyan-400" /> 100% ALL ALTCOINS
+                  <CheckCircle2 className="w-3 h-3 text-cyan-400" /> ALL 730+ ALTCOINS
                 </span>
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                Scanning All {scanningProgress.total}+ USDT Perpetuals • Multi-TF Absorption • CVD Delta • OI
+                Optimized 24/7 Serverless • Multi-TF Absorption (5m, 15m, 1h, 4h, 1d) • CVD Delta • OI
               </p>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
-          {/* Progress Indicator */}
+        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end flex-wrap">
+          {/* Interval Selector */}
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+            <Clock className="w-3.5 h-3.5 text-slate-400 ml-1.5 mr-1" />
+            {[1, 3, 5, 10].map((mins) => (
+              <button
+                key={mins}
+                onClick={() => setRefreshIntervalMinutes(mins)}
+                className={`px-2 py-1 text-xs font-mono rounded-lg transition-all ${
+                  refreshIntervalMinutes === mins
+                    ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {mins}m
+              </button>
+            ))}
+          </div>
+
+          {/* Countdown timer */}
           <div className="text-right font-mono text-xs">
             <div className="text-[10px] text-slate-400 flex items-center gap-1.5 justify-end">
               <span className={`w-2 h-2 rounded-full ${loading ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`} />
-              {loading ? 'Scanning Pipeline' : 'Sync Active'}
+              Next in: <span className="text-cyan-300 font-semibold">{formatTime(secondsUntilNext)}</span>
             </div>
-            <p className="text-slate-200 font-semibold mt-0.5">
-              {scanningProgress.loaded} / {scanningProgress.total} Pairs
+            <p className="text-slate-300 text-[11px] mt-0.5">
+              {scanningProgress.loaded} / {scanningProgress.total} Pairs Synced
             </p>
           </div>
 
@@ -244,7 +285,7 @@ export default function Dashboard() {
           </button>
 
           <button
-            onClick={loadAllAltcoins}
+            onClick={() => loadAllAltcoins(true)}
             disabled={loading}
             className="flex items-center gap-2 px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs rounded-xl shadow-lg shadow-cyan-500/20 transition-all disabled:opacity-50"
           >
@@ -362,7 +403,7 @@ export default function Dashboard() {
               {filteredSignals.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
-                    {loading ? 'Connecting & scanning all 700+ Altcoins in real-time...' : 'No signals match your filter criteria.'}
+                    {loading ? 'Connecting & scanning all 730+ Altcoins in real-time...' : 'No signals match your filter criteria.'}
                   </td>
                 </tr>
               ) : (

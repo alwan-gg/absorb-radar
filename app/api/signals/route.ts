@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchAllAltcoins } from '@/lib/binance';
 import { processSymbol } from '@/lib/detector';
-import { CoinSignal, ScanResult } from '@/lib/types';
+import { CoinSignal } from '@/lib/types';
 
 // Chunk cache store (keyed by `${offset}-${limit}`)
 const chunkCache = new Map<string, { timestamp: number; signals: CoinSignal[]; total: number }>();
-const CACHE_TTL_MS = 25000; // 25s cache per chunk
+// 3 minutes (180,000ms) cache TTL - optimum for 5m closed candles & zero resource waste
+const CACHE_TTL_MS = 180000;
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -14,13 +15,16 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const offset = parseInt(searchParams.get('offset') || '0', 10);
   const limit = Math.min(parseInt(searchParams.get('limit') || '150', 10), 200);
+  const forceFresh = searchParams.get('fresh') === '1' || searchParams.get('fresh') === 'true';
   const cacheKey = `${offset}-${limit}`;
   const now = Date.now();
 
   const cached = chunkCache.get(cacheKey);
-  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+  if (!forceFresh && cached && now - cached.timestamp < CACHE_TTL_MS) {
     return NextResponse.json({
       lastUpdated: cached.timestamp,
+      cached: true,
+      cacheAgeSec: Math.round((now - cached.timestamp) / 1000),
       offset,
       limit,
       totalAvailable: cached.total,
@@ -34,6 +38,7 @@ export async function GET(req: NextRequest) {
     if (!tickers || tickers.length === 0) {
       return NextResponse.json({
         lastUpdated: now,
+        cached: false,
         offset,
         limit,
         totalAvailable: total,
@@ -70,6 +75,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       lastUpdated: now,
+      cached: false,
       offset,
       limit,
       totalAvailable: total,

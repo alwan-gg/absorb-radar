@@ -11,7 +11,7 @@ export interface Binance24hTicker {
   symbol: string;
   lastPrice: string;
   priceChangePercent: string;
-  quoteVolume: string; // 24h volume in USDT
+  quoteVolume: string;
 }
 
 let cachedUniverse: { timestamp: number; tickers: Binance24hTicker[] } = {
@@ -22,8 +22,8 @@ let cachedUniverse: { timestamp: number; tickers: Binance24hTicker[] } = {
 export async function fetchAllAltcoins(offset: number = 0, limit: number = 150): Promise<{ tickers: Binance24hTicker[]; total: number }> {
   try {
     const now = Date.now();
-    // Cache the 24h tickers list for 60 seconds to prevent hammering the ticker endpoint
-    if (cachedUniverse.tickers.length === 0 || now - cachedUniverse.timestamp > 60000) {
+    // Cache universe list for 5 minutes (300,000ms) for high efficiency
+    if (cachedUniverse.tickers.length === 0 || now - cachedUniverse.timestamp > 300000) {
       const res = await fetch(`${FAPI_BASE}/ticker/24hr`, { 
         headers: DEFAULT_HEADERS,
         cache: 'no-store'
