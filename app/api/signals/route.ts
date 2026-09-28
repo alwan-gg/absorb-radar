@@ -1,53 +1,60 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchTopAltcoins } from '@/lib/binance';
+import { fetchAllAltcoins } from '@/lib/binance';
 import { processSymbol } from '@/lib/detector';
 import { CoinSignal, ScanResult } from '@/lib/types';
 
-// In-memory cache for fast serverless responses
-let cachedSignals: ScanResult = {
-  lastUpdated: 0,
-  totalScanned: 0,
-  signals: [],
-};
-
-const CACHE_TTL_MS = 20000; // 20 seconds cache
+// Chunk cache store (keyed by `${offset}-${limit}`)
+const chunkCache = new Map<string, { timestamp: number; signals: CoinSignal[]; total: number }>();
+const CACHE_TTL_MS = 25000; // 25s cache per chunk
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 45; // 45s timeout on Singapore Edge/Serverless
+export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const limitParam = parseInt(searchParams.get('limit') || '180', 10);
-  const limit = Math.min(Math.max(limitParam, 20), 200);
+  const offset = parseInt(searchParams.get('offset') || '0', 10);
+  const limit = Math.min(parseInt(searchParams.get('limit') || '150', 10), 200);
+  const cacheKey = `${offset}-${limit}`;
   const now = Date.now();
 
-  // Return cached result if still fresh and covers requested amount
-  if (
-    cachedSignals.signals.length >= limit &&
-    now - cachedSignals.lastUpdated < CACHE_TTL_MS
-  ) {
-    return NextResponse.json(cachedSignals);
+  const cached = chunkCache.get(cacheKey);
+  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+    return NextResponse.json({
+      lastUpdated: cached.timestamp,
+      offset,
+      limit,
+      totalAvailable: cached.total,
+      totalScanned: cached.signals.length,
+      signals: cached.signals,
+    });
   }
 
   try {
-    const topTickers = await fetchTopAltcoins(limit);
-    if (!topTickers || topTickers.length === 0) {
-      return NextResponse.json(cachedSignals);
+    const { tickers, total } = await fetchAllAltcoins(offset, limit);
+    if (!tickers || tickers.length === 0) {
+      return NextResponse.json({
+        lastUpdated: now,
+        offset,
+        limit,
+        totalAvailable: total,
+        totalScanned: 0,
+        signals: [],
+      });
     }
 
-    // Process in parallel chunks of 25
-    const batchSize = 25;
+    // Process in parallel chunks of 30
+    const batchSize = 30;
     const allSignals: CoinSignal[] = [];
 
-    for (let i = 0; i < topTickers.length; i += batchSize) {
-      const batch = topTickers.slice(i, i + batchSize);
+    for (let i = 0; i < tickers.length; i += batchSize) {
+      const batch = tickers.slice(i, i + batchSize);
       const results = await Promise.all(batch.map((ticker) => processSymbol(ticker)));
       for (const res of results) {
         if (res) allSignals.push(res);
       }
     }
 
-    // Sort by confluence score descending, then by volume
+    // Sort within chunk
     allSignals.sort((a, b) => {
       if (b.confluenceScore !== a.confluenceScore) {
         return b.confluenceScore - a.confluenceScore;
@@ -55,16 +62,23 @@ export async function GET(req: NextRequest) {
       return b.volume24hUsd - a.volume24hUsd;
     });
 
-    cachedSignals = {
+    chunkCache.set(cacheKey, {
+      timestamp: now,
+      signals: allSignals,
+      total,
+    });
+
+    return NextResponse.json({
       lastUpdated: now,
+      offset,
+      limit,
+      totalAvailable: total,
       totalScanned: allSignals.length,
       signals: allSignals,
-    };
-
-    return NextResponse.json(cachedSignals);
+    });
   } catch (error: any) {
     return NextResponse.json(
-      { error: 'Failed to scan signals', details: error?.message },
+      { error: 'Failed to scan chunk', details: error?.message },
       { status: 500 }
     );
   }

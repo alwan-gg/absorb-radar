@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Activity, 
   ArrowUpRight, 
@@ -10,54 +10,117 @@ import {
   VolumeX, 
   ExternalLink, 
   Search, 
-  Filter, 
   ShieldAlert,
   Zap,
   TrendingUp,
-  BarChart2
+  BarChart2,
+  CheckCircle2
 } from 'lucide-react';
-import { CoinSignal, ScanResult, Timeframe, AbsorbStatus } from '@/lib/types';
+import { CoinSignal, Timeframe } from '@/lib/types';
 
 export default function Dashboard() {
-  const [data, setData] = useState<ScanResult | null>(null);
+  const [signalsMap, setSignalsMap] = useState<Record<string, CoinSignal>>({});
   const [loading, setLoading] = useState<boolean>(true);
+  const [scanningProgress, setScanningProgress] = useState<{ loaded: number; total: number }>({ loaded: 0, total: 720 });
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [search, setSearch] = useState<string>('');
   const [filterType, setFilterType] = useState<'ALL' | 'BULLISH' | 'BEARISH' | 'CONFLUENCE'>('ALL');
   const [selectedTf, setSelectedTf] = useState<Timeframe | 'ALL'>('ALL');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
-  const [scanLimit, setScanLimit] = useState<number>(180);
+  const isFetchingRef = useRef<boolean>(false);
 
-  const fetchSignals = async () => {
+  // Fetch a single chunk
+  const fetchChunk = async (offset: number, limit: number = 150) => {
     try {
-      setLoading(true);
-      const res = await fetch(`/api/signals?limit=${scanLimit}`);
-      const json: ScanResult = await res.json();
-      if (json && json.signals) {
-        setData(json);
+      const res = await fetch(`/api/signals?offset=${offset}&limit=${limit}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  // Continuous Full-Market Scanner
+  const loadAllAltcoins = async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    setLoading(true);
+
+    try {
+      // 1. First chunk (Instant priority: Top 150 volume coins)
+      const firstData = await fetchChunk(0, 150);
+      let totalAvailable = 720;
+
+      if (firstData && firstData.signals) {
+        totalAvailable = firstData.totalAvailable || 720;
+        setSignalsMap((prev) => {
+          const next = { ...prev };
+          firstData.signals.forEach((s: CoinSignal) => {
+            next[s.symbol] = s;
+          });
+          return next;
+        });
+        setScanningProgress({ loaded: firstData.signals.length, total: totalAvailable });
         setLastRefreshed(new Date());
       }
+
+      // 2. Fetch remaining chunks in background pipeline (offsets 150, 300, 450, 600...)
+      const offsets: number[] = [];
+      for (let off = 150; off < totalAvailable; off += 150) {
+        offsets.push(off);
+      }
+
+      // Parallel chunk requests
+      const chunkResults = await Promise.all(offsets.map((off) => fetchChunk(off, 150)));
+
+      setSignalsMap((prev) => {
+        const next = { ...prev };
+        let count = Object.keys(prev).length;
+        chunkResults.forEach((chunk) => {
+          if (chunk && chunk.signals) {
+            chunk.signals.forEach((s: CoinSignal) => {
+              next[s.symbol] = s;
+            });
+          }
+        });
+        count = Object.keys(next).length;
+        setScanningProgress({ loaded: count, total: totalAvailable });
+        return next;
+      });
+
+      setLastRefreshed(new Date());
     } catch (err) {
-      console.error('Fetch error:', err);
+      console.error('Scan error:', err);
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   };
 
   useEffect(() => {
-    fetchSignals();
-    const interval = setInterval(fetchSignals, 25000); // 25s auto-refresh
+    loadAllAltcoins();
+    const interval = setInterval(loadAllAltcoins, 30000); // Auto-refresh every 30s
     return () => clearInterval(interval);
-  }, [scanLimit]);
+  }, []);
+
+  // Convert map to sorted array
+  const allSignalsList = useMemo(() => {
+    const list = Object.values(signalsMap);
+    return list.sort((a, b) => {
+      if (b.confluenceScore !== a.confluenceScore) {
+        return b.confluenceScore - a.confluenceScore;
+      }
+      return b.volume24hUsd - a.volume24hUsd;
+    });
+  }, [signalsMap]);
 
   // Stats calculation
   const stats = useMemo(() => {
-    if (!data?.signals) return { bullish: 0, bearish: 0, confluence: 0, total: 0 };
     let bullish = 0;
     let bearish = 0;
     let confluence = 0;
 
-    data.signals.forEach((s) => {
+    allSignalsList.forEach((s) => {
       const hasBull = Object.values(s.timeframes).some((t) => t.status === 'BULLISH_ABSORB');
       const hasBear = Object.values(s.timeframes).some((t) => t.status === 'BEARISH_ABSORB');
       if (hasBull) bullish++;
@@ -65,25 +128,21 @@ export default function Dashboard() {
       if (s.confluenceScore >= 2) confluence++;
     });
 
-    return { bullish, bearish, confluence, total: data.signals.length };
-  }, [data]);
+    return { bullish, bearish, confluence, total: allSignalsList.length };
+  }, [allSignalsList]);
 
-  // Filtered symbols
+  // Filtered list
   const filteredSignals = useMemo(() => {
-    if (!data?.signals) return [];
-    return data.signals.filter((item) => {
-      // Search query
+    return allSignalsList.filter((item) => {
       if (search && !item.symbol.toLowerCase().includes(search.toLowerCase())) {
         return false;
       }
 
-      // Timeframe filter
       if (selectedTf !== 'ALL') {
         const tfData = item.timeframes[selectedTf];
         if (!tfData || tfData.status === 'NEUTRAL') return false;
       }
 
-      // Signal category filter
       if (filterType === 'BULLISH') {
         return Object.values(item.timeframes).some((t) => t.status === 'BULLISH_ABSORB');
       }
@@ -96,7 +155,7 @@ export default function Dashboard() {
 
       return true;
     });
-  }, [data, search, filterType, selectedTf]);
+  }, [allSignalsList, search, filterType, selectedTf]);
 
   const formatUsd = (num: number) => {
     if (num >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
@@ -140,7 +199,7 @@ export default function Dashboard() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Top Navbar */}
+      {/* Top Header */}
       <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800/80 pb-6">
         <div>
           <div className="flex items-center gap-3">
@@ -150,38 +209,27 @@ export default function Dashboard() {
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                 ABSORB & FLOW RADAR
-                <span className="text-xs font-mono bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded-full font-normal">
-                  24/7 CLOUD
+                <span className="text-xs font-mono bg-cyan-950 text-cyan-400 border border-cyan-800 px-2.5 py-0.5 rounded-full font-normal flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-cyan-400" /> 100% ALL ALTCOINS
                 </span>
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                Binance Perpetuals • Multi-TF Absorption (5m, 15m, 1h, 4h, 1d) • CVD Delta • OI
+                Scanning All {scanningProgress.total}+ USDT Perpetuals • Multi-TF Absorption • CVD Delta • OI
               </p>
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
-          {/* Scan Limit Selector */}
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
-            {[50, 100, 180].map((lim) => (
-              <button
-                key={lim}
-                onClick={() => setScanLimit(lim)}
-                className={`px-2.5 py-1 text-xs font-mono rounded-lg transition-all ${
-                  scanLimit === lim
-                    ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {lim === 180 ? 'ALL (180+)' : `Top ${lim}`}
-              </button>
-            ))}
-          </div>
-
-          <div className="text-right hidden sm:block">
-            <p className="text-[11px] text-slate-400">Last scanned</p>
-            <p className="text-xs font-mono text-slate-200">{lastRefreshed.toLocaleTimeString()}</p>
+          {/* Progress Indicator */}
+          <div className="text-right font-mono text-xs">
+            <div className="text-[10px] text-slate-400 flex items-center gap-1.5 justify-end">
+              <span className={`w-2 h-2 rounded-full ${loading ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`} />
+              {loading ? 'Scanning Pipeline' : 'Sync Active'}
+            </div>
+            <p className="text-slate-200 font-semibold mt-0.5">
+              {scanningProgress.loaded} / {scanningProgress.total} Pairs
+            </p>
           </div>
 
           <button
@@ -196,12 +244,12 @@ export default function Dashboard() {
           </button>
 
           <button
-            onClick={fetchSignals}
+            onClick={loadAllAltcoins}
             disabled={loading}
             className="flex items-center gap-2 px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs rounded-xl shadow-lg shadow-cyan-500/20 transition-all disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Scan Now
+            Refresh All
           </button>
         </div>
       </header>
@@ -210,11 +258,11 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-xs font-medium">Altcoins Monitored</span>
+            <span className="text-xs font-medium">All Altcoins Tracked</span>
             <BarChart2 className="w-4 h-4 text-cyan-400" />
           </div>
           <p className="text-2xl font-bold font-mono text-white mt-2">{stats.total}</p>
-          <p className="text-[10px] text-slate-500 mt-0.5">Top active pairs by USDT volume</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">Entire Binance USDT Futures market</p>
         </div>
 
         <div className="bg-emerald-950/30 border border-emerald-900/40 p-4 rounded-2xl">
@@ -223,7 +271,7 @@ export default function Dashboard() {
             <TrendingUp className="w-4 h-4" />
           </div>
           <p className="text-2xl font-bold font-mono text-emerald-400 mt-2">{stats.bullish}</p>
-          <p className="text-[10px] text-emerald-500/70 mt-0.5">Limit buyers defending dumps</p>
+          <p className="text-[10px] text-emerald-500/70 mt-0.5">Passive whale limit bids</p>
         </div>
 
         <div className="bg-rose-950/30 border border-rose-900/40 p-4 rounded-2xl">
@@ -232,7 +280,7 @@ export default function Dashboard() {
             <ShieldAlert className="w-4 h-4" />
           </div>
           <p className="text-2xl font-bold font-mono text-rose-400 mt-2">{stats.bearish}</p>
-          <p className="text-[10px] text-rose-500/70 mt-0.5">Limit sellers capping pumps</p>
+          <p className="text-[10px] text-rose-500/70 mt-0.5">Passive whale limit asks</p>
         </div>
 
         <div className="bg-purple-950/30 border border-purple-900/40 p-4 rounded-2xl">
@@ -247,19 +295,17 @@ export default function Dashboard() {
 
       {/* Filter & Search Bar */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-900/40 border border-slate-800 p-3 rounded-2xl">
-        {/* Search */}
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search coin (e.g. PEPE, SOL, NEAR, SUI, DOGE)..."
+            placeholder="Search all 700+ coins (e.g. 1000PEPE, DOGE, SOL, JUP, WIF, SUI, NEAR)..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full bg-slate-950/80 border border-slate-800/80 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/50"
           />
         </div>
 
-        {/* Categories */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
           {(['ALL', 'BULLISH', 'BEARISH', 'CONFLUENCE'] as const).map((cat) => (
             <button
@@ -279,7 +325,6 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* TF Selector */}
         <div className="flex items-center gap-1 border-l border-slate-800 pl-3">
           {(['ALL', '5m', '15m', '1h', '4h', '1d'] as const).map((tf) => (
             <button
@@ -317,7 +362,7 @@ export default function Dashboard() {
               {filteredSignals.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
-                    {loading ? 'Scanning 180+ Altcoins across all timeframes...' : 'No signals match your filter criteria.'}
+                    {loading ? 'Connecting & scanning all 700+ Altcoins in real-time...' : 'No signals match your filter criteria.'}
                   </td>
                 </tr>
               ) : (
@@ -380,7 +425,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Educational Footer Banner */}
+      {/* Educational Footer */}
       <footer className="bg-slate-900/30 border border-slate-800/60 p-4 rounded-xl text-xs text-slate-400 space-y-1">
         <div className="font-semibold text-slate-300 flex items-center gap-2">
           <Zap className="w-3.5 h-3.5 text-cyan-400" /> Absorption Methodology:

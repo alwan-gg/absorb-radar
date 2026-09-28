@@ -14,31 +14,43 @@ export interface Binance24hTicker {
   quoteVolume: string; // 24h volume in USDT
 }
 
-export async function fetchTopAltcoins(limit: number = 180): Promise<Binance24hTicker[]> {
-  try {
-    const res = await fetch(`${FAPI_BASE}/ticker/24hr`, { 
-      headers: DEFAULT_HEADERS,
-      cache: 'no-store'
-    });
-    if (!res.ok) {
-      console.error(`Binance ticker/24hr HTTP ${res.status}: ${res.statusText}`);
-      return [];
-    }
-    const data: Binance24hTicker[] = await res.json();
-    
-    if (!Array.isArray(data)) return [];
+let cachedUniverse: { timestamp: number; tickers: Binance24hTicker[] } = {
+  timestamp: 0,
+  tickers: [],
+};
 
-    return data
-      .filter((item) => item.symbol.endsWith('USDT') && !item.symbol.includes('_'))
-      .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-      .slice(0, limit);
+export async function fetchAllAltcoins(offset: number = 0, limit: number = 150): Promise<{ tickers: Binance24hTicker[]; total: number }> {
+  try {
+    const now = Date.now();
+    // Cache the 24h tickers list for 60 seconds to prevent hammering the ticker endpoint
+    if (cachedUniverse.tickers.length === 0 || now - cachedUniverse.timestamp > 60000) {
+      const res = await fetch(`${FAPI_BASE}/ticker/24hr`, { 
+        headers: DEFAULT_HEADERS,
+        cache: 'no-store'
+      });
+      if (!res.ok) {
+        console.error(`Binance ticker/24hr HTTP ${res.status}: ${res.statusText}`);
+        return { tickers: [], total: 0 };
+      }
+      const data: Binance24hTicker[] = await res.json();
+      if (Array.isArray(data)) {
+        const filtered = data
+          .filter((item) => item.symbol.endsWith('USDT') && !item.symbol.includes('_') && parseFloat(item.quoteVolume) > 10000)
+          .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
+        cachedUniverse = { timestamp: now, tickers: filtered };
+      }
+    }
+
+    const total = cachedUniverse.tickers.length;
+    const sliced = cachedUniverse.tickers.slice(offset, offset + limit);
+    return { tickers: sliced, total };
   } catch (error) {
-    console.error('Failed to fetch 24h ticker:', error);
-    return [];
+    console.error('Failed to fetch altcoin universe:', error);
+    return { tickers: [], total: 0 };
   }
 }
 
-export async function fetchKlineData(symbol: string, interval: Timeframe, limit: number = 25) {
+export async function fetchKlineData(symbol: string, interval: Timeframe, limit: number = 22) {
   try {
     const url = `${FAPI_BASE}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetch(url, { 
