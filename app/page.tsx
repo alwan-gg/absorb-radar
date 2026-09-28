@@ -26,11 +26,12 @@ export default function Dashboard() {
   const [filterType, setFilterType] = useState<'ALL' | 'BULLISH' | 'BEARISH' | 'CONFLUENCE'>('ALL');
   const [selectedTf, setSelectedTf] = useState<Timeframe | 'ALL'>('ALL');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
+  const [scanLimit, setScanLimit] = useState<number>(180);
 
   const fetchSignals = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/signals');
+      const res = await fetch(`/api/signals?limit=${scanLimit}`);
       const json: ScanResult = await res.json();
       if (json && json.signals) {
         setData(json);
@@ -45,9 +46,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchSignals();
-    const interval = setInterval(fetchSignals, 20000); // 20s auto-refresh
+    const interval = setInterval(fetchSignals, 25000); // 25s auto-refresh
     return () => clearInterval(interval);
-  }, []);
+  }, [scanLimit]);
 
   // Stats calculation
   const stats = useMemo(() => {
@@ -161,6 +162,23 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+          {/* Scan Limit Selector */}
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+            {[50, 100, 180].map((lim) => (
+              <button
+                key={lim}
+                onClick={() => setScanLimit(lim)}
+                className={`px-2.5 py-1 text-xs font-mono rounded-lg transition-all ${
+                  scanLimit === lim
+                    ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {lim === 180 ? 'ALL (180+)' : `Top ${lim}`}
+              </button>
+            ))}
+          </div>
+
           <div className="text-right hidden sm:block">
             <p className="text-[11px] text-slate-400">Last scanned</p>
             <p className="text-xs font-mono text-slate-200">{lastRefreshed.toLocaleTimeString()}</p>
@@ -234,7 +252,7 @@ export default function Dashboard() {
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search coin (e.g. PEPE, SOL, NEAR)..."
+            placeholder="Search coin (e.g. PEPE, SOL, NEAR, SUI, DOGE)..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full bg-slate-950/80 border border-slate-800/80 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/50"
@@ -299,7 +317,7 @@ export default function Dashboard() {
               {filteredSignals.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
-                    {loading ? 'Scanning Altcoins across all timeframes...' : 'No signals match your filter criteria.'}
+                    {loading ? 'Scanning 180+ Altcoins across all timeframes...' : 'No signals match your filter criteria.'}
                   </td>
                 </tr>
               ) : (

@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchTopAltcoins } from '@/lib/binance';
 import { processSymbol } from '@/lib/detector';
 import { CoinSignal, ScanResult } from '@/lib/types';
@@ -10,27 +10,33 @@ let cachedSignals: ScanResult = {
   signals: [],
 };
 
-const CACHE_TTL_MS = 15000; // 15 seconds cache
+const CACHE_TTL_MS = 20000; // 20 seconds cache
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30; // 30s timeout for Vercel
+export const maxDuration = 45; // 45s timeout on Singapore Edge/Serverless
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const limitParam = parseInt(searchParams.get('limit') || '180', 10);
+  const limit = Math.min(Math.max(limitParam, 20), 200);
   const now = Date.now();
 
-  // Return cached result if still fresh
-  if (cachedSignals.signals.length > 0 && now - cachedSignals.lastUpdated < CACHE_TTL_MS) {
+  // Return cached result if still fresh and covers requested amount
+  if (
+    cachedSignals.signals.length >= limit &&
+    now - cachedSignals.lastUpdated < CACHE_TTL_MS
+  ) {
     return NextResponse.json(cachedSignals);
   }
 
   try {
-    const topTickers = await fetchTopAltcoins(50);
+    const topTickers = await fetchTopAltcoins(limit);
     if (!topTickers || topTickers.length === 0) {
       return NextResponse.json(cachedSignals);
     }
 
-    // Process in batches of 10 to avoid rate limit spikes
-    const batchSize = 10;
+    // Process in parallel chunks of 25
+    const batchSize = 25;
     const allSignals: CoinSignal[] = [];
 
     for (let i = 0; i < topTickers.length; i += batchSize) {

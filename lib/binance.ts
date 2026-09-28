@@ -14,7 +14,7 @@ export interface Binance24hTicker {
   quoteVolume: string; // 24h volume in USDT
 }
 
-export async function fetchTopAltcoins(limit: number = 40): Promise<Binance24hTicker[]> {
+export async function fetchTopAltcoins(limit: number = 180): Promise<Binance24hTicker[]> {
   try {
     const res = await fetch(`${FAPI_BASE}/ticker/24hr`, { 
       headers: DEFAULT_HEADERS,
