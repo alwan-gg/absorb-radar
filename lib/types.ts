@@ -10,6 +10,7 @@ export interface TFSpan {
   cvdDeltaUsd: number;        // delta in USD
   cvdRatio: number;           // taker buy vol / total vol (0.0 to 1.0)
   rangePct: number;           // (high - low) / close %
+  candleCloseTs: number;      // close time of the evaluated candle (ms epoch)
 }
 
 export interface CoinSignal {
@@ -22,6 +23,9 @@ export interface CoinSignal {
   updatedAt: number;
   confluenceScore: number;    // Count of active absorbed TFs
   timeframes: Record<Timeframe, TFSpan>;
+  lastSignalTs: number;       // most recent absorb candle close (0 = none)
+  lastSignalTf: Timeframe | null;
+  topVolSpike: number;        // max volSpikeRatio across all TFs
 }
 
 export interface ScanResult {

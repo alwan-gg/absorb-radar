@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [search, setSearch] = useState<string>('');
   const [filterType, setFilterType] = useState<'ALL' | 'BULLISH' | 'BEARISH' | 'CONFLUENCE'>('ALL');
+  const [sortMode, setSortMode] = useState<'CONFLUENCE' | 'FRESH' | 'VOLSPIKE'>('FRESH');
   const [selectedTf, setSelectedTf] = useState<Timeframe | 'ALL'>('ALL');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
   const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState<number>(5);
@@ -124,12 +125,47 @@ export default function Dashboard() {
   const allSignalsList = useMemo(() => {
     const list = Object.values(signalsMap);
     return list.sort((a, b) => {
+      if (sortMode === 'FRESH') {
+        // Freshest absorb candle first; coins without signal go to the bottom
+        const at = a.lastSignalTs || 0;
+        const bt = b.lastSignalTs || 0;
+        if (bt !== at) return bt - at;
+        if (b.confluenceScore !== a.confluenceScore) return b.confluenceScore - a.confluenceScore;
+        return b.volume24hUsd - a.volume24hUsd;
+      }
+      if (sortMode === 'VOLSPIKE') {
+        const av = a.topVolSpike || 1;
+        const bv = b.topVolSpike || 1;
+        if (bv !== av) return bv - av;
+        return b.volume24hUsd - a.volume24hUsd;
+      }
       if (b.confluenceScore !== a.confluenceScore) {
         return b.confluenceScore - a.confluenceScore;
       }
       return b.volume24hUsd - a.volume24hUsd;
     });
-  }, [signalsMap]);
+  }, [signalsMap, sortMode]);
+
+  // Fresh threshold: absorb candle closed within the last 2 candles of its TF.
+  // 5m -> 10 min, 15m -> 30 min, 1h -> 2h, 4h -> 8h, 1d -> 2d
+  const TF_FRESH_MS: Record<Timeframe, number> = {
+    '5m': 10 * 60 * 1000,
+    '15m': 30 * 60 * 1000,
+    '1h': 2 * 60 * 60 * 1000,
+    '4h': 8 * 60 * 60 * 1000,
+    '1d': 48 * 60 * 60 * 1000,
+  };
+  const isFresh = (item: CoinSignal) => {
+    if (!item.lastSignalTs || !item.lastSignalTf) return false;
+    return Date.now() - item.lastSignalTs <= TF_FRESH_MS[item.lastSignalTf];
+  };
+  const freshAge = (item: CoinSignal) => {
+    if (!item.lastSignalTs) return '';
+    const secs = Math.max(0, Math.floor((Date.now() - item.lastSignalTs) / 1000));
+    if (secs < 60) return `${secs}s ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+    return `${Math.floor(secs / 3600)}h ago`;
+  };
 
   // Stats calculation
   const stats = useMemo(() => {
@@ -366,6 +402,28 @@ export default function Dashboard() {
           ))}
         </div>
 
+        {/* Sort Mode Selector */}
+        <div className="flex items-center gap-1 bg-slate-950/60 border border-slate-800 p-1 rounded-xl">
+          <span className="text-[10px] text-slate-500 font-mono px-1.5">SORT</span>
+          {([
+            ['FRESH', '🕐 Fresh'],
+            ['VOLSPIKE', '📊 VolX'],
+            ['CONFLUENCE', '⚡ Confluence'],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              onClick={() => setSortMode(mode)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap ${
+                sortMode === mode
+                  ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-1 border-l border-slate-800 pl-3">
           {(['ALL', '5m', '15m', '1h', '4h', '1d'] as const).map((tf) => (
             <button
@@ -418,6 +476,11 @@ export default function Dashboard() {
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-sm text-white font-mono">{cleanSymbol}</span>
                           <span className="text-[10px] text-slate-500 font-mono">/USDT</span>
+                          {isFresh(item) && (
+                            <span className="text-[9px] bg-amber-950 text-amber-300 border border-amber-600/60 px-1.5 py-0.2 rounded font-mono font-bold animate-pulse">
+                              NEW {item.lastSignalTf}
+                            </span>
+                          )}
                           {item.confluenceScore >= 2 && (
                             <span className="text-[9px] bg-purple-950 text-purple-300 border border-purple-800 px-1.5 py-0.2 rounded font-mono">
                               {item.confluenceScore} TF
@@ -430,6 +493,11 @@ export default function Dashboard() {
                             {isUp ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                             {item.priceChange24h.toFixed(2)}%
                           </span>
+                          {item.lastSignalTs > 0 && (
+                            <span className="text-[10px] font-mono text-slate-500">
+                              {freshAge(item)}
+                            </span>
+                          )}
                         </div>
                       </td>
 
@@ -437,6 +505,13 @@ export default function Dashboard() {
                       <td className="py-4 px-4 font-mono">
                         <div className="text-slate-300 font-medium">{formatUsd(item.volume24hUsd)}</div>
                         <div className="text-[10px] text-slate-500 mt-0.5">OI: {formatUsd(item.openInterestUsd)}</div>
+                        {item.topVolSpike > 1.2 && (
+                          <div className={`text-[10px] mt-0.5 font-semibold ${
+                            item.topVolSpike >= 2 ? 'text-amber-400' : 'text-slate-400'
+                          }`}>
+                            📊 {item.topVolSpike}x vol
+                          </div>
+                        )}
                       </td>
 
                       {/* Timeframe Badges */}

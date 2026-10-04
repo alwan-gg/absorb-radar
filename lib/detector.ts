@@ -11,12 +11,15 @@ export function analyzeCandleAbsorption(klines: any[], tf: Timeframe): TFSpan {
       cvdDeltaUsd: 0,
       cvdRatio: 0.5,
       rangePct: 0,
+      candleCloseTs: 0,
     };
   }
 
   // Use closed candle (klines[klines.length - 2]) for reliable signal, or last candle if checking live
   const targetCandle = klines[klines.length - 2] || klines[klines.length - 1];
   const prevCandles = klines.slice(-22, -2);
+  // Binance kline[6] = close time of the candle (ms). Fallback to open + tf.
+  const candleCloseTs = parseInt(targetCandle[6], 10) || 0;
 
   const open = parseFloat(targetCandle[1]);
   const high = parseFloat(targetCandle[2]);
@@ -77,6 +80,7 @@ export function analyzeCandleAbsorption(klines: any[], tf: Timeframe): TFSpan {
     cvdDeltaUsd: Math.round(cvdDeltaUsd),
     cvdRatio,
     rangePct,
+    candleCloseTs,
   };
 }
 
@@ -93,13 +97,22 @@ export async function processSymbol(ticker: Binance24hTicker): Promise<CoinSigna
     ]);
 
     let confluenceScore = 0;
+    let lastSignalTs = 0;
+    let lastSignalTf: Timeframe | null = null;
+    let topVolSpike = 1;
 
     timeframes.forEach((tf, index) => {
       const klines = klineDataList[index];
       const span = analyzeCandleAbsorption(klines, tf);
       tfResults[tf] = span;
+      if (span.volSpikeRatio > topVolSpike) topVolSpike = span.volSpikeRatio;
       if (span.status !== 'NEUTRAL') {
         confluenceScore += 1;
+        // freshest absorb candle across all TFs
+        if (span.candleCloseTs > lastSignalTs) {
+          lastSignalTs = span.candleCloseTs;
+          lastSignalTf = tf;
+        }
       }
     });
 
@@ -115,6 +128,9 @@ export async function processSymbol(ticker: Binance24hTicker): Promise<CoinSigna
       updatedAt: Date.now(),
       confluenceScore,
       timeframes: tfResults as Record<Timeframe, TFSpan>,
+      lastSignalTs,
+      lastSignalTf,
+      topVolSpike: parseFloat(topVolSpike.toFixed(2)),
     };
   } catch (error) {
     return null;
