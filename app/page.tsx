@@ -27,6 +27,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState<string>('');
   const [filterType, setFilterType] = useState<'ALL' | 'BULLISH' | 'BEARISH' | 'CONFLUENCE'>('ALL');
   const [sortMode, setSortMode] = useState<'CONFLUENCE' | 'FRESH' | 'VOLSPIKE'>('FRESH');
+  const [includeStocks, setIncludeStocks] = useState<boolean>(false);
   const [selectedTf, setSelectedTf] = useState<Timeframe | 'ALL'>('ALL');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
   const [refreshIntervalMinutes, setRefreshIntervalMinutes] = useState<number>(5);
@@ -34,9 +35,9 @@ export default function Dashboard() {
   const isFetchingRef = useRef<boolean>(false);
 
   // Fetch a single chunk
-  const fetchChunk = async (offset: number, limit: number = 150, fresh: boolean = false) => {
+  const fetchChunk = async (offset: number, limit: number = 150, fresh: boolean = false, stocks: boolean = false) => {
     try {
-      const res = await fetch(`/api/signals?offset=${offset}&limit=${limit}${fresh ? '&fresh=1' : ''}`);
+      const res = await fetch(`/api/signals?offset=${offset}&limit=${limit}${fresh ? '&fresh=1' : ''}${stocks ? '&stocks=1' : ''}`);
       if (!res.ok) return null;
       return await res.json();
     } catch {
@@ -45,25 +46,37 @@ export default function Dashboard() {
   };
 
   // Continuous Full-Market Scanner
-  const loadAllAltcoins = async (forceFresh: boolean = false) => {
+  const loadAllAltcoins = async (forceFresh: boolean = false, stocksOverride?: boolean) => {
+    const stocks = stocksOverride ?? includeStocks;
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     setLoading(true);
 
     try {
       // 1. First chunk (Instant priority: Top 150 volume coins)
-      const firstData = await fetchChunk(0, 150, forceFresh);
+      const firstData = await fetchChunk(0, 150, forceFresh, stocks);
       let totalAvailable = 730;
 
       if (firstData && firstData.signals) {
         totalAvailable = firstData.totalAvailable || 730;
-        setSignalsMap((prev) => {
-          const next = { ...prev };
-          firstData.signals.forEach((s: CoinSignal) => {
-            next[s.symbol] = s;
+        // Mode berubah (toggle stocks) -> reset map biar saham/crypto lama hilang
+        if (stocksOverride !== undefined) {
+          setSignalsMap(() => {
+            const fresh: Record<string, CoinSignal> = {};
+            firstData.signals.forEach((s: CoinSignal) => {
+              fresh[s.symbol] = s;
+            });
+            return fresh;
           });
-          return next;
-        });
+        } else {
+          setSignalsMap((prev) => {
+            const next = { ...prev };
+            firstData.signals.forEach((s: CoinSignal) => {
+              next[s.symbol] = s;
+            });
+            return next;
+          });
+        }
         setScanningProgress({ loaded: firstData.signals.length, total: totalAvailable });
         setLastRefreshed(new Date());
       }
@@ -74,7 +87,7 @@ export default function Dashboard() {
         offsets.push(off);
       }
 
-      const chunkResults = await Promise.all(offsets.map((off) => fetchChunk(off, 150, forceFresh)));
+      const chunkResults = await Promise.all(offsets.map((off) => fetchChunk(off, 150, forceFresh, stocks)));
 
       setSignalsMap((prev) => {
         const next = { ...prev };
@@ -269,7 +282,7 @@ export default function Dashboard() {
               <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                 ABSORB & FLOW RADAR
                 <span className="text-xs font-mono bg-cyan-950 text-cyan-400 border border-cyan-800 px-2.5 py-0.5 rounded-full font-normal flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3 text-cyan-400" /> ALL 730+ ALTCOINS
+                  <CheckCircle2 className="w-3 h-3 text-cyan-400" /> {includeStocks ? 'ALL 740 SYMBOLS' : 'CRYPTO ONLY'}
                 </span>
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -308,6 +321,24 @@ export default function Dashboard() {
               {scanningProgress.loaded} / {scanningProgress.total} Pairs Synced
             </p>
           </div>
+
+          {/* Stocks toggle (TradFi filter) */}
+          <button
+            onClick={() => {
+              const next = !includeStocks;
+              setIncludeStocks(next);
+              loadAllAltcoins(true, next);
+            }}
+            disabled={loading}
+            title={includeStocks ? 'Sembunyikan saham & index (crypto only)' : 'Tampilkan saham & index juga'}
+            className={`px-3 py-2.5 rounded-xl border text-xs font-medium transition-all flex items-center gap-1.5 disabled:opacity-50 ${
+              includeStocks
+                ? 'bg-amber-950/60 border-amber-600/60 text-amber-300'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            📈 {includeStocks ? 'Stocks ON' : 'Stocks OFF'}
+          </button>
 
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
@@ -461,7 +492,7 @@ export default function Dashboard() {
               {filteredSignals.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
-                    {loading ? 'Connecting & scanning all 730+ Altcoins in real-time...' : 'No signals match your filter criteria.'}
+                    {loading ? 'Connecting & scanning the market in real-time...' : 'No signals match your filter criteria.'}
                   </td>
                 </tr>
               ) : (

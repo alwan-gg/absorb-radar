@@ -16,7 +16,8 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(searchParams.get('offset') || '0', 10);
   const limit = Math.min(parseInt(searchParams.get('limit') || '150', 10), 200);
   const forceFresh = searchParams.get('fresh') === '1' || searchParams.get('fresh') === 'true';
-  const cacheKey = `${offset}-${limit}`;
+  const includeStocks = searchParams.get('stocks') === '1' || searchParams.get('stocks') === 'true';
+  const cacheKey = `${offset}-${limit}-stocks${includeStocks ? '1' : '0'}`;
   const now = Date.now();
 
   const cached = chunkCache.get(cacheKey);
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { tickers, total } = await fetchAllAltcoins(offset, limit);
+    const { tickers, total } = await fetchAllAltcoins(offset, limit, includeStocks);
     if (!tickers || tickers.length === 0) {
       return NextResponse.json({
         lastUpdated: now,
